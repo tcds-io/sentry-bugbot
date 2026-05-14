@@ -1,5 +1,5 @@
 {
-  "name": "sentry-errors-fixer",
+  "name": "sentry-bugbot",
   "version": "0.1.0",
   "description": "GitHub Action that pulls fresh Sentry issues and opens PRs that fix them using Claude or Codex.",
   "private": true,
@@ -16,6 +16,7 @@
     "@actions/core": "^1.11.1",
     "@actions/github": "^6.0.0",
     "simple-git": "^3.27.0",
+    "yaml": "^2.9.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

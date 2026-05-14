@@ -14,7 +14,7 @@ async function main(): Promise<void> {
   const { owner, repo } = github.context.repo;
   const octokit = github.getOctokit(cfg.githubToken);
 
-  const sentry = new SentryClient(cfg.sentryUrl, cfg.sentryToken);
+  const sentry = new SentryClient(cfg.sentry.url, cfg.sentry.token);
   const agent = getAgent(cfg.agent);
   const git = new GitRepo(cwd);
   await git.configureBot();
@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   const baseSha = await getBaseSha(git, baseBranch);
   core.info(`Base branch: ${baseBranch} @ ${baseSha}`);
 
-  const issues = await sentry.listIssues(cfg.sentryOrg, cfg.sentryProject, cfg.maxIssues);
+  const issues = await sentry.listIssues(cfg.sentry.org, cfg.sentry.project, cfg.maxIssues);
   core.info(`Fetched ${issues.length} Sentry issues`);
 
   const rows: Row[] = [];
@@ -84,7 +84,7 @@ async function processIssue(args: {
   const event = await sentry.getLatestEvent(issue.id);
   const prompt = buildPrompt(issue, event);
   core.info(`Running ${agent.name} for ${issue.shortId}`);
-  const result = await agent.run({ prompt, cwd, token: cfg.agentToken });
+  const result = await agent.run({ prompt, cwd, token: cfg.token });
 
   if (!(await git.hasChanges())) {
     await git.resetHard(baseSha);

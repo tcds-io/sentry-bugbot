@@ -1,4 +1,4 @@
-# sentry-errors-fixer
+# sentry-bugbot
 
 GitHub Action that pulls the freshest unresolved Sentry issues for your project and opens one PR per issue containing a fix and a regression test, written by either Claude Code or Codex.
 
@@ -21,13 +21,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: thiagopnts/sentry-errors-fixer@v1
+      - uses: tcds-io/sentry-bugbot@v1
         with:
           agent: claude
-          agentToken: ${{ secrets.ANTHROPIC_API_KEY }}
-          sentryToken: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          sentryOrg: my-org
-          sentryProject: my-project
+          token: ${{ secrets.ANTHROPIC_API_KEY }}
+          sentry: |
+            token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+            org: my-org
+            project: my-project
 ```
 
 ## Inputs
@@ -35,15 +36,24 @@ jobs:
 | input | required | default | description |
 | --- | --- | --- | --- |
 | `agent` | yes | — | `claude` or `codex` |
-| `agentToken` | yes | — | API key for the selected agent CLI |
-| `sentryToken` | yes | — | Sentry auth token (`event:read`, `project:read`, `org:read`) |
-| `sentryOrg` | yes | — | Sentry organization slug |
-| `sentryProject` | yes | — | Sentry project slug |
-| `sentryUrl` | no | `https://sentry.io` | Override for self-hosted Sentry |
+| `token` | yes | — | API key for the selected agent CLI |
+| `sentry` | yes | — | YAML block with `token`, `org`, `project`, and optional `url` (defaults to `https://sentry.io`) |
 | `maxIssues` | no | `5` | Top-N issues (by event count) attempted per run |
 | `baseBranch` | no | repo default | Branch PRs target |
 | `githubToken` | no | `${{ github.token }}` | Token for branch push + PR creation |
 | `dryRun` | no | `false` | If true, skip push/PR and reset the branch |
+
+### `sentry` block
+
+```yaml
+sentry: |
+  token: ${{ secrets.SENTRY_AUTH_TOKEN }}   # event:read, project:read, org:read
+  org: my-org
+  project: my-project
+  url: https://sentry.io                    # optional, for self-hosted
+```
+
+> GitHub Actions doesn't support nested objects in `with:`, so `sentry` is parsed as a YAML/JSON string inside the action.
 
 ## How it works
 
