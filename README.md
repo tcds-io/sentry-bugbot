@@ -1,0 +1,1 @@
+# sentry-errors-fixer
