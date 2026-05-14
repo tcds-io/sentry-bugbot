@@ -1,0 +1,41 @@
+name: Sentry Errors Fixer
+description: Pulls fresh Sentry issues and opens PRs that fix them using AI.
+author: thiagocordeiro
+branding:
+  icon: alert-triangle
+  color: orange
+inputs:
+  agent:
+    description: Coding agent to use. One of "claude" or "codex".
+    required: true
+  agentToken:
+    description: API key for the selected agent (ANTHROPIC_API_KEY for claude, OPENAI_API_KEY for codex).
+    required: true
+  sentryToken:
+    description: Sentry auth token with event:read, project:read, org:read scopes.
+    required: true
+  sentryOrg:
+    description: Sentry organization slug.
+    required: true
+  sentryProject:
+    description: Sentry project slug.
+    required: true
+  sentryUrl:
+    description: Sentry base URL. Defaults to https://sentry.io for SaaS.
+    required: false
+    default: https://sentry.io
+  maxIssues:
+    description: Maximum number of issues to attempt per run.
+    required: false
+    default: "5"
+  baseBranch:
+    description: Branch PRs target. Defaults to the repository default branch.
+    required: false
+    default: ""
+  githubToken:
+    description: GitHub token used for pushing branches and creating PRs.
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: node20
+  main: dist/index.js
