@@ -1,7 +1,7 @@
 import * as core from "@actions/core";
 import { exec } from "./exec.js";
 import type { AgentRunResult } from "./index.js";
-import type { ClaudeAuth } from "../config.js";
+import type { Credentials } from "../config.js";
 
 let installed = false;
 
@@ -15,12 +15,16 @@ async function ensureInstalled(): Promise<void> {
   installed = true;
 }
 
-export async function runClaude(opts: { prompt: string; cwd: string; auth: ClaudeAuth }): Promise<AgentRunResult> {
+export async function runClaude(opts: {
+  prompt: string;
+  cwd: string;
+  credentials: Credentials;
+}): Promise<AgentRunResult> {
   await ensureInstalled();
   const env =
-    opts.auth.kind === "api-key"
-      ? { ANTHROPIC_API_KEY: opts.auth.value }
-      : { CLAUDE_CODE_OAUTH_TOKEN: opts.auth.value };
+    opts.credentials.type === "api-key"
+      ? { ANTHROPIC_API_KEY: opts.credentials.token }
+      : { CLAUDE_CODE_OAUTH_TOKEN: opts.credentials.token };
   const res = await exec(
     "claude",
     ["-p", opts.prompt, "--permission-mode", "acceptEdits"],

@@ -36010,54 +36010,46 @@ var SentrySchema = external_exports.object({
   project: external_exports.string().min(1),
   url: external_exports.string().url().default("https://sentry.io")
 });
+var CredentialsSchema = external_exports.object({
+  type: external_exports.enum(["api-key", "auth_token"]),
+  token: external_exports.string().min(1)
+});
 var BaseSchema = external_exports.object({
   agent: external_exports.enum(["claude", "codex"]),
+  credentials: CredentialsSchema,
   sentry: SentrySchema,
   maxIssues: external_exports.number().int().positive().max(50),
   baseBranch: external_exports.string(),
   githubToken: external_exports.string().min(1),
   dryRun: external_exports.boolean()
 });
-function loadConfig() {
-  const rawSentry = core.getInput("sentry", { required: true });
-  let parsedSentry;
+function parseBlock(name, raw) {
   try {
-    parsedSentry = (0, import_yaml.parse)(rawSentry);
+    return (0, import_yaml.parse)(raw);
   } catch (err) {
-    throw new Error(`Failed to parse 'sentry' input as YAML/JSON: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `Failed to parse '${name}' input as YAML/JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
-  const apiKey = core.getInput("token");
-  const oauthToken = core.getInput("claudeOauthToken");
-  const agent = core.getInput("agent", { required: true }).toLowerCase();
-  if (apiKey) core.setSecret(apiKey);
-  if (oauthToken) core.setSecret(oauthToken);
-  const base = BaseSchema.parse({
-    agent,
-    sentry: parsedSentry,
+}
+function loadConfig() {
+  const raw = {
+    agent: core.getInput("agent", { required: true }).toLowerCase(),
+    credentials: parseBlock("credentials", core.getInput("credentials", { required: true })),
+    sentry: parseBlock("sentry", core.getInput("sentry", { required: true })),
     maxIssues: Number.parseInt(core.getInput("maxIssues") || "5", 10),
     baseBranch: core.getInput("baseBranch") || "",
     githubToken: core.getInput("githubToken", { required: true }),
     dryRun: core.getBooleanInput("dryRun") || false
-  });
-  core.setSecret(base.githubToken);
-  core.setSecret(base.sentry.token);
-  if (base.agent === "codex") {
-    if (oauthToken) {
-      throw new Error("claudeOauthToken is only valid when agent: claude");
-    }
-    if (!apiKey) {
-      throw new Error("token is required when agent: codex");
-    }
-    return { ...base, agent: "codex", token: apiKey };
+  };
+  const cfg = BaseSchema.parse(raw);
+  if (cfg.credentials.type === "auth_token" && cfg.agent !== "claude") {
+    throw new Error(`credentials.type 'auth_token' is only supported when agent: claude (got agent: ${cfg.agent})`);
   }
-  if (apiKey && oauthToken) {
-    throw new Error("Provide either token or claudeOauthToken, not both");
-  }
-  if (!apiKey && !oauthToken) {
-    throw new Error("agent: claude requires token or claudeOauthToken");
-  }
-  const claudeAuth = apiKey ? { kind: "api-key", value: apiKey } : { kind: "oauth-token", value: oauthToken };
-  return { ...base, agent: "claude", claudeAuth };
+  core.setSecret(cfg.credentials.token);
+  core.setSecret(cfg.githubToken);
+  core.setSecret(cfg.sentry.token);
+  return cfg;
 }
 
 // src/sentry.ts
@@ -36267,7 +36259,7 @@ async function ensureInstalled() {
 }
 async function runClaude(opts) {
   await ensureInstalled();
-  const env = opts.auth.kind === "api-key" ? { ANTHROPIC_API_KEY: opts.auth.value } : { CLAUDE_CODE_OAUTH_TOKEN: opts.auth.value };
+  const env = opts.credentials.type === "api-key" ? { ANTHROPIC_API_KEY: opts.credentials.token } : { CLAUDE_CODE_OAUTH_TOKEN: opts.credentials.token };
   const res = await exec(
     "claude",
     ["-p", opts.prompt, "--permission-mode", "acceptEdits"],
@@ -36293,12 +36285,15 @@ async function ensureInstalled2() {
 }
 async function runCodex(opts) {
   await ensureInstalled2();
+  if (opts.credentials.type !== "api-key") {
+    throw new Error(`codex only supports credentials.type 'api-key' (got '${opts.credentials.type}')`);
+  }
   const res = await exec(
     "codex",
     ["exec", "--full-auto", opts.prompt],
     {
       cwd: opts.cwd,
-      env: { OPENAI_API_KEY: opts.token }
+      env: { OPENAI_API_KEY: opts.credentials.token }
     }
   );
   return { ok: res.exitCode === 0, output: res.stdout };
@@ -41427,9 +41422,7 @@ async function processIssue(args) {
   const event = await sentry.getLatestEvent(issue.id);
   const prompt = buildPrompt(issue, event);
   core7.info(`Running ${agent.name} for ${issue.shortId}`);
-  const result = agent.name === "claude" && cfg.agent === "claude" ? await agent.run({ prompt, cwd, auth: cfg.claudeAuth }) : agent.name === "codex" && cfg.agent === "codex" ? await agent.run({ prompt, cwd, token: cfg.token }) : (() => {
-    throw new Error(`agent/config mismatch: ${agent.name} vs ${cfg.agent}`);
-  })();
+  const result = await agent.run({ prompt, cwd, credentials: cfg.credentials });
   if (!await git.hasChanges()) {
     await git.resetHard(baseSha);
     return { kind: "skipped", reason: result.ok ? "no changes produced" : "agent failed without changes" };

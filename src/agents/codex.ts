@@ -1,6 +1,7 @@
 import * as core from "@actions/core";
 import { exec } from "./exec.js";
 import type { AgentRunResult } from "./index.js";
+import type { Credentials } from "../config.js";
 
 let installed = false;
 
@@ -14,14 +15,21 @@ async function ensureInstalled(): Promise<void> {
   installed = true;
 }
 
-export async function runCodex(opts: { prompt: string; cwd: string; token: string }): Promise<AgentRunResult> {
+export async function runCodex(opts: {
+  prompt: string;
+  cwd: string;
+  credentials: Credentials;
+}): Promise<AgentRunResult> {
   await ensureInstalled();
+  if (opts.credentials.type !== "api-key") {
+    throw new Error(`codex only supports credentials.type 'api-key' (got '${opts.credentials.type}')`);
+  }
   const res = await exec(
     "codex",
     ["exec", "--full-auto", opts.prompt],
     {
       cwd: opts.cwd,
-      env: { OPENAI_API_KEY: opts.token },
+      env: { OPENAI_API_KEY: opts.credentials.token },
     },
   );
   return { ok: res.exitCode === 0, output: res.stdout };
