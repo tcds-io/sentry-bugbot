@@ -9,8 +9,14 @@ const SentrySchema = z.object({
   url: z.string().url().default("https://sentry.io"),
 });
 
+const CredentialsSchema = z.object({
+  type: z.enum(["api-key", "auth_token"]),
+  token: z.string().min(1),
+});
+
 const BaseSchema = z.object({
   agent: z.enum(["claude", "codex"]),
+  credentials: CredentialsSchema,
   sentry: SentrySchema,
   maxIssues: z.number().int().positive().max(50),
   baseBranch: z.string(),
@@ -18,62 +24,38 @@ const BaseSchema = z.object({
   dryRun: z.boolean(),
 });
 
-export type ClaudeAuth =
-  | { kind: "api-key"; value: string }
-  | { kind: "oauth-token"; value: string };
+export type Credentials = z.infer<typeof CredentialsSchema>;
+export type Config = z.infer<typeof BaseSchema>;
 
-export type Config = z.infer<typeof BaseSchema> &
-  (
-    | { agent: "claude"; claudeAuth: ClaudeAuth; token?: undefined }
-    | { agent: "codex"; token: string; claudeAuth?: undefined }
-  );
+function parseBlock(name: string, raw: string): unknown {
+  try {
+    return parseYaml(raw);
+  } catch (err) {
+    throw new Error(
+      `Failed to parse '${name}' input as YAML/JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
 
 export function loadConfig(): Config {
-  const rawSentry = core.getInput("sentry", { required: true });
-  let parsedSentry: unknown;
-  try {
-    parsedSentry = parseYaml(rawSentry);
-  } catch (err) {
-    throw new Error(`Failed to parse 'sentry' input as YAML/JSON: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  const apiKey = core.getInput("token");
-  const oauthToken = core.getInput("claudeOauthToken");
-  const agent = core.getInput("agent", { required: true }).toLowerCase();
-
-  if (apiKey) core.setSecret(apiKey);
-  if (oauthToken) core.setSecret(oauthToken);
-
-  const base = BaseSchema.parse({
-    agent,
-    sentry: parsedSentry,
+  const raw = {
+    agent: core.getInput("agent", { required: true }).toLowerCase(),
+    credentials: parseBlock("credentials", core.getInput("credentials", { required: true })),
+    sentry: parseBlock("sentry", core.getInput("sentry", { required: true })),
     maxIssues: Number.parseInt(core.getInput("maxIssues") || "5", 10),
     baseBranch: core.getInput("baseBranch") || "",
     githubToken: core.getInput("githubToken", { required: true }),
     dryRun: core.getBooleanInput("dryRun") || false,
-  });
+  };
 
-  core.setSecret(base.githubToken);
-  core.setSecret(base.sentry.token);
+  const cfg = BaseSchema.parse(raw);
 
-  if (base.agent === "codex") {
-    if (oauthToken) {
-      throw new Error("claudeOauthToken is only valid when agent: claude");
-    }
-    if (!apiKey) {
-      throw new Error("token is required when agent: codex");
-    }
-    return { ...base, agent: "codex", token: apiKey };
+  if (cfg.credentials.type === "auth_token" && cfg.agent !== "claude") {
+    throw new Error(`credentials.type 'auth_token' is only supported when agent: claude (got agent: ${cfg.agent})`);
   }
 
-  if (apiKey && oauthToken) {
-    throw new Error("Provide either token or claudeOauthToken, not both");
-  }
-  if (!apiKey && !oauthToken) {
-    throw new Error("agent: claude requires token or claudeOauthToken");
-  }
-  const claudeAuth: ClaudeAuth = apiKey
-    ? { kind: "api-key", value: apiKey }
-    : { kind: "oauth-token", value: oauthToken };
-  return { ...base, agent: "claude", claudeAuth };
+  core.setSecret(cfg.credentials.token);
+  core.setSecret(cfg.githubToken);
+  core.setSecret(cfg.sentry.token);
+  return cfg;
 }
