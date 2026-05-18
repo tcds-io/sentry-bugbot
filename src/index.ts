@@ -84,7 +84,14 @@ async function processIssue(args: {
   const event = await sentry.getLatestEvent(issue.id);
   const prompt = buildPrompt(issue, event);
   core.info(`Running ${agent.name} for ${issue.shortId}`);
-  const result = await agent.run({ prompt, cwd, token: cfg.token });
+  const result =
+    agent.name === "claude" && cfg.agent === "claude"
+      ? await agent.run({ prompt, cwd, auth: cfg.claudeAuth })
+      : agent.name === "codex" && cfg.agent === "codex"
+        ? await agent.run({ prompt, cwd, token: cfg.token })
+        : (() => {
+            throw new Error(`agent/config mismatch: ${agent.name} vs ${cfg.agent}`);
+          })();
 
   if (!(await git.hasChanges())) {
     await git.resetHard(baseSha);
