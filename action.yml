@@ -9,8 +9,11 @@ inputs:
     description: Coding agent to use. One of "claude" or "codex".
     required: true
   token:
-    description: API key for the selected agent (ANTHROPIC_API_KEY for claude, OPENAI_API_KEY for codex).
-    required: true
+    description: API key for the selected agent (`ANTHROPIC_API_KEY` for `claude` via the Anthropic API, `OPENAI_API_KEY` for `codex`). Mutually exclusive with `claudeOauthToken`.
+    required: false
+  claudeOauthToken:
+    description: Claude Code OAuth token from `claude setup-token` (binds the run to your Pro/Max subscription instead of the Anthropic API). Only valid when `agent: claude`. Mutually exclusive with `token`.
+    required: false
   sentry:
     description: |
       YAML/JSON block with Sentry config. Example:

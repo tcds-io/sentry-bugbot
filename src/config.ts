@@ -9,9 +9,8 @@ const SentrySchema = z.object({
   url: z.string().url().default("https://sentry.io"),
 });
 
-const ConfigSchema = z.object({
+const BaseSchema = z.object({
   agent: z.enum(["claude", "codex"]),
-  token: z.string().min(1),
   sentry: SentrySchema,
   maxIssues: z.number().int().positive().max(50),
   baseBranch: z.string(),
@@ -19,7 +18,15 @@ const ConfigSchema = z.object({
   dryRun: z.boolean(),
 });
 
-export type Config = z.infer<typeof ConfigSchema>;
+export type ClaudeAuth =
+  | { kind: "api-key"; value: string }
+  | { kind: "oauth-token"; value: string };
+
+export type Config = z.infer<typeof BaseSchema> &
+  (
+    | { agent: "claude"; claudeAuth: ClaudeAuth; token?: undefined }
+    | { agent: "codex"; token: string; claudeAuth?: undefined }
+  );
 
 export function loadConfig(): Config {
   const rawSentry = core.getInput("sentry", { required: true });
@@ -30,20 +37,43 @@ export function loadConfig(): Config {
     throw new Error(`Failed to parse 'sentry' input as YAML/JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const raw = {
-    agent: core.getInput("agent", { required: true }).toLowerCase(),
-    token: core.getInput("token", { required: true }),
+  const apiKey = core.getInput("token");
+  const oauthToken = core.getInput("claudeOauthToken");
+  const agent = core.getInput("agent", { required: true }).toLowerCase();
+
+  if (apiKey) core.setSecret(apiKey);
+  if (oauthToken) core.setSecret(oauthToken);
+
+  const base = BaseSchema.parse({
+    agent,
     sentry: parsedSentry,
     maxIssues: Number.parseInt(core.getInput("maxIssues") || "5", 10),
     baseBranch: core.getInput("baseBranch") || "",
     githubToken: core.getInput("githubToken", { required: true }),
     dryRun: core.getBooleanInput("dryRun") || false,
-  };
+  });
 
-  core.setSecret(raw.token);
-  core.setSecret(raw.githubToken);
+  core.setSecret(base.githubToken);
+  core.setSecret(base.sentry.token);
 
-  const cfg = ConfigSchema.parse(raw);
-  core.setSecret(cfg.sentry.token);
-  return cfg;
+  if (base.agent === "codex") {
+    if (oauthToken) {
+      throw new Error("claudeOauthToken is only valid when agent: claude");
+    }
+    if (!apiKey) {
+      throw new Error("token is required when agent: codex");
+    }
+    return { ...base, agent: "codex", token: apiKey };
+  }
+
+  if (apiKey && oauthToken) {
+    throw new Error("Provide either token or claudeOauthToken, not both");
+  }
+  if (!apiKey && !oauthToken) {
+    throw new Error("agent: claude requires token or claudeOauthToken");
+  }
+  const claudeAuth: ClaudeAuth = apiKey
+    ? { kind: "api-key", value: apiKey }
+    : { kind: "oauth-token", value: oauthToken };
+  return { ...base, agent: "claude", claudeAuth };
 }
