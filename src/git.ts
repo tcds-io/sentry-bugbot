@@ -45,6 +45,11 @@ export class GitRepo {
     return (await this.git.revparse([ref])).trim();
   }
 
+  async commitMessagesSince(baseSha: string): Promise<string[]> {
+    const log = await this.git.log({ from: baseSha, to: "HEAD" });
+    return log.all.map((c) => c.message);
+  }
+
   async resetHard(ref: string): Promise<void> {
     await this.git.reset(["--hard", ref]);
     await this.git.clean("f", ["-d"]);
