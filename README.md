@@ -94,5 +94,5 @@ Caveats:
 ```bash
 npm install
 npm run typecheck
-npm run build       # bundles to dist/index.js (committed for the action runtime)
+npm run build       # bundles to dist/index.cjs (committed for the action runtime)
 ```
