@@ -8,25 +8,29 @@ inputs:
   agent:
     description: Coding agent to use. One of "claude" or "codex".
     required: true
-  credentials:
+  credentials-type:
     description: |
-      YAML/JSON block with agent credentials. Example:
-        credentials: |
-          type: api-key        # or "auth_token" (claude only)
-          token: ${{ secrets.ANTHROPIC_API_KEY }}
+      Credentials kind. One of "api-key" or "auth_token".
       `api-key` maps to ANTHROPIC_API_KEY (claude) or OPENAI_API_KEY (codex).
       `auth_token` maps to CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`
       and binds the run to a Claude Pro/Max subscription. Only valid for claude.
     required: true
-  sentry:
-    description: |
-      YAML/JSON block with Sentry config. Example:
-        sentry: |
-          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          org: my-org
-          project: my-project
-          url: https://sentry.io   # optional, defaults to https://sentry.io
+  credentials-token:
+    description: API key or OAuth token for the selected agent.
     required: true
+  sentry-token:
+    description: Sentry auth token (event:read, project:read, org:read).
+    required: true
+  sentry-org:
+    description: Sentry organization slug.
+    required: true
+  sentry-project:
+    description: Sentry project slug.
+    required: true
+  sentry-url:
+    description: Sentry base URL (for self-hosted). Defaults to https://sentry.io.
+    required: false
+    default: "https://sentry.io"
   maxIssues:
     description: Maximum number of issues to attempt per run.
     required: false

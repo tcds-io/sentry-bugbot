@@ -1,5 +1,4 @@
 import * as core from "@actions/core";
-import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 const SentrySchema = z.object({
@@ -14,7 +13,7 @@ const CredentialsSchema = z.object({
   token: z.string().min(1),
 });
 
-const BaseSchema = z.object({
+const ConfigSchema = z.object({
   agent: z.enum(["claude", "codex"]),
   credentials: CredentialsSchema,
   sentry: SentrySchema,
@@ -25,33 +24,31 @@ const BaseSchema = z.object({
 });
 
 export type Credentials = z.infer<typeof CredentialsSchema>;
-export type Config = z.infer<typeof BaseSchema>;
-
-function parseBlock(name: string, raw: string): unknown {
-  try {
-    return parseYaml(raw);
-  } catch (err) {
-    throw new Error(
-      `Failed to parse '${name}' input as YAML/JSON: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
+export type Config = z.infer<typeof ConfigSchema>;
 
 export function loadConfig(): Config {
   const raw = {
     agent: core.getInput("agent", { required: true }).toLowerCase(),
-    credentials: parseBlock("credentials", core.getInput("credentials", { required: true })),
-    sentry: parseBlock("sentry", core.getInput("sentry", { required: true })),
+    credentials: {
+      type: core.getInput("credentials-type", { required: true }),
+      token: core.getInput("credentials-token", { required: true }),
+    },
+    sentry: {
+      token: core.getInput("sentry-token", { required: true }),
+      org: core.getInput("sentry-org", { required: true }),
+      project: core.getInput("sentry-project", { required: true }),
+      url: core.getInput("sentry-url") || "https://sentry.io",
+    },
     maxIssues: Number.parseInt(core.getInput("maxIssues") || "5", 10),
     baseBranch: core.getInput("baseBranch") || "",
     githubToken: core.getInput("githubToken", { required: true }),
     dryRun: core.getBooleanInput("dryRun") || false,
   };
 
-  const cfg = BaseSchema.parse(raw);
+  const cfg = ConfigSchema.parse(raw);
 
   if (cfg.credentials.type === "auth_token" && cfg.agent !== "claude") {
-    throw new Error(`credentials.type 'auth_token' is only supported when agent: claude (got agent: ${cfg.agent})`);
+    throw new Error(`credentials-type 'auth_token' is only supported when agent: claude (got agent: ${cfg.agent})`);
   }
 
   core.setSecret(cfg.credentials.token);
