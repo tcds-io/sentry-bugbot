@@ -1,6 +1,21 @@
 # sentry-bugbot
 
-GitHub Action that pulls the freshest unresolved Sentry issues for your project and opens one PR per issue containing a fix and a regression test, written by either Claude Code or Codex.
+GitHub Action that pulls the freshest unresolved Sentry issues for your project and opens a single PR containing a fix (and where practical a regression test) per issue, written by either Claude Code or Codex.
+
+## Required repository permission
+
+This action pushes a branch and opens a pull request, so the repo must allow GitHub Actions to do both. Enable it once at:
+
+```
+https://github.com/<git-org>/<git-project>/settings/actions
+```
+
+Under **Workflow permissions**:
+
+- Select **Read and write permissions**.
+- Tick **Allow GitHub Actions to create and approve pull requests**.
+
+Without this the action will fail with `GitHub Actions is not permitted to create or approve pull requests` when it tries to open the PR.
 
 ## Usage
 
@@ -57,9 +72,29 @@ Or, with a Claude Pro/Max subscription via OAuth token:
 | `sentry-project` | yes | — | Sentry project slug. |
 | `sentry-url` | no | `https://sentry.io` | Sentry base URL (for self-hosted or regional). |
 | `maxIssues` | no | `5` | Top-N issues (by event count) attempted per run |
+| `additional-instructions` | no | `""` | Extra free-form instructions appended to the agent prompt (commit message format, test framework, files to avoid, etc.) |
 | `baseBranch` | no | repo default | Branch PRs target |
 | `githubToken` | no | `${{ github.token }}` | Token for branch push + PR creation |
 | `dryRun` | no | `false` | If true, skip push/PR and reset the branch |
+
+### Customizing agent behavior
+
+`additional-instructions` is appended to the prompt the action builds for the agent. Use it for project conventions the agent would not know about:
+
+```yaml
+      - uses: tcds-io/sentry-bugbot@v1
+        with:
+          agent: claude
+          credentials-type: api-key
+          credentials-token: ${{ secrets.ANTHROPIC_API_KEY }}
+          sentry-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          sentry-org: my-org
+          sentry-project: my-project
+          additional-instructions: |
+            Use this commit format: SENTRY-{sentry-project}: {title}\n\n{description}
+            Tests live in tests/ and use vitest.
+            Never touch files under generated/.
+```
 
 ### Credentials
 
@@ -83,10 +118,10 @@ Caveats:
 
 ## How it works
 
-1. Fetches unresolved Sentry issues from the last 24h, ordered by frequency.
-2. For each issue, creates branch `sentry-fix/<short-id>` (idempotent — skipped if branch or open PR already exists).
-3. Hands the error (title, stack trace, breadcrumbs, request) to the selected agent CLI with instructions to fix the root cause and add a regression test.
-4. Commits the diff and opens a PR linking the Sentry issue.
+1. Fetches up to `maxIssues` unresolved Sentry issues from the last 24h, ordered by frequency.
+2. Creates a single batch branch `sentry-fix/batch-<utc-timestamp>`.
+3. Hands every issue (title, stack trace, breadcrumbs, request) to the selected agent CLI in **one session**, with instructions to fix each root cause, add a regression test where practical, and commit per fix using `fix(sentry): <SHORTID> <title>`. Issues sharing a root cause are coalesced into a single commit referencing every affected shortId, which eliminates duplicate fixes on related errors.
+4. Pushes the branch and opens one PR listing every issue and its outcome.
 5. Writes a job summary table mapping each issue to its outcome.
 
 ## Development
