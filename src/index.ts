@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   const items = await Promise.all(
     issues.map(async (issue) => ({ issue, event: await sentry.getLatestEvent(issue.id) })),
   );
-  const prompt = buildBatchPrompt(items);
+  const prompt = buildBatchPrompt(items, cfg.additionalInstructions);
 
   core.info(`Running ${agent.name} on ${items.length} issue(s) in one session`);
   const result = await agent.run({ prompt, cwd, credentials: cfg.credentials });

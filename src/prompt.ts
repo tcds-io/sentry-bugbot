@@ -2,7 +2,10 @@ import type { SentryEvent, SentryIssue } from "./sentry.js";
 
 export const SUMMARY_MARKER = "===SENTRY_FIXER_SUMMARY===";
 
-export function buildBatchPrompt(items: { issue: SentryIssue; event: SentryEvent | null }[]): string {
+export function buildBatchPrompt(
+  items: { issue: SentryIssue; event: SentryEvent | null }[],
+  additionalInstructions = "",
+): string {
   const lines: string[] = [];
   lines.push(`# Sentry batch fix: ${items.length} issue(s)`);
   lines.push("");
@@ -20,6 +23,15 @@ export function buildBatchPrompt(items: { issue: SentryIssue; event: SentryEvent
   lines.push("   followed by a JSON object on the next line, e.g.:");
   lines.push('   {"results":[{"shortId":"PROJ-1","status":"fixed"},{"shortId":"PROJ-2","status":"skipped","reason":"could not reproduce"}]}');
   lines.push("");
+  const extra = additionalInstructions.trim();
+  if (extra) {
+    lines.push("## Additional project-specific instructions");
+    lines.push("");
+    lines.push("The repository owner has provided the following instructions. They take precedence over the generic rules above when they conflict (except for rule 6 — never push or open PRs yourself).");
+    lines.push("");
+    lines.push(extra);
+    lines.push("");
+  }
   lines.push("---");
   lines.push("");
   for (let i = 0; i < items.length; i++) {

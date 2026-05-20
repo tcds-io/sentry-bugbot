@@ -21,6 +21,7 @@ const ConfigSchema = z.object({
   baseBranch: z.string(),
   githubToken: z.string().min(1),
   dryRun: z.boolean(),
+  additionalInstructions: z.string(),
 });
 
 export type Credentials = z.infer<typeof CredentialsSchema>;
@@ -43,6 +44,7 @@ export function loadConfig(): Config {
     baseBranch: core.getInput("baseBranch") || "",
     githubToken: core.getInput("githubToken", { required: true }),
     dryRun: core.getBooleanInput("dryRun") || false,
+    additionalInstructions: core.getInput("additional-instructions") || "",
   };
 
   const cfg = ConfigSchema.parse(raw);

@@ -35,6 +35,13 @@ inputs:
     description: Maximum number of issues to attempt per run.
     required: false
     default: "5"
+  additional-instructions:
+    description: |
+      Extra free-form instructions appended to the agent prompt. Useful for
+      enforcing project conventions (commit message format, test framework,
+      code style, files to avoid, etc.).
+    required: false
+    default: ""
   baseBranch:
     description: Branch PRs target. Defaults to the repository default branch.
     required: false

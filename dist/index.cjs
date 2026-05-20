@@ -28693,7 +28693,8 @@ var ConfigSchema = external_exports.object({
   maxIssues: external_exports.number().int().positive().max(50),
   baseBranch: external_exports.string(),
   githubToken: external_exports.string().min(1),
-  dryRun: external_exports.boolean()
+  dryRun: external_exports.boolean(),
+  additionalInstructions: external_exports.string()
 });
 function loadConfig() {
   const raw = {
@@ -28711,7 +28712,8 @@ function loadConfig() {
     maxIssues: Number.parseInt(core.getInput("maxIssues") || "5", 10),
     baseBranch: core.getInput("baseBranch") || "",
     githubToken: core.getInput("githubToken", { required: true }),
-    dryRun: core.getBooleanInput("dryRun") || false
+    dryRun: core.getBooleanInput("dryRun") || false,
+    additionalInstructions: core.getInput("additional-instructions") || ""
   };
   const cfg = ConfigSchema.parse(raw);
   if (cfg.credentials.type === "auth_token" && cfg.agent !== "claude") {
@@ -28819,7 +28821,7 @@ var SentryClient = class {
 
 // src/prompt.ts
 var SUMMARY_MARKER = "===SENTRY_FIXER_SUMMARY===";
-function buildBatchPrompt(items) {
+function buildBatchPrompt(items, additionalInstructions = "") {
   const lines = [];
   lines.push(`# Sentry batch fix: ${items.length} issue(s)`);
   lines.push("");
@@ -28837,6 +28839,15 @@ function buildBatchPrompt(items) {
   lines.push("   followed by a JSON object on the next line, e.g.:");
   lines.push('   {"results":[{"shortId":"PROJ-1","status":"fixed"},{"shortId":"PROJ-2","status":"skipped","reason":"could not reproduce"}]}');
   lines.push("");
+  const extra = additionalInstructions.trim();
+  if (extra) {
+    lines.push("## Additional project-specific instructions");
+    lines.push("");
+    lines.push("The repository owner has provided the following instructions. They take precedence over the generic rules above when they conflict (except for rule 6 \u2014 never push or open PRs yourself).");
+    lines.push("");
+    lines.push(extra);
+    lines.push("");
+  }
   lines.push("---");
   lines.push("");
   for (let i2 = 0; i2 < items.length; i2++) {
@@ -34097,7 +34108,7 @@ async function main() {
   const items = await Promise.all(
     issues.map(async (issue) => ({ issue, event: await sentry.getLatestEvent(issue.id) }))
   );
-  const prompt = buildBatchPrompt(items);
+  const prompt = buildBatchPrompt(items, cfg.additionalInstructions);
   core7.info(`Running ${agent.name} on ${items.length} issue(s) in one session`);
   const result = await agent.run({ prompt, cwd, credentials: cfg.credentials });
   core7.info(`Agent finished (ok=${result.ok})`);
