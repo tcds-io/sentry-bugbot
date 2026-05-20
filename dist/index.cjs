@@ -34164,7 +34164,7 @@ async function main() {
   }
   await git.push(branch);
   const title = `fix(sentry): batch fix for ${issues.length} issue(s)`;
-  const body = renderPrBody(items.map((i2) => i2.issue), outcomesByShortId, result.output);
+  const body = renderPrBody(items, outcomesByShortId, result.output);
   const pr = await createPr(octokit, owner, repo, { head: branch, base: baseBranch, title, body });
   core7.info(`Opened PR #${pr.number}`);
   const rows = issues.map((i2) => {
@@ -34206,18 +34206,66 @@ async function getBaseSha(git, branch) {
     return await git.revparse(branch);
   }
 }
-function renderPrBody(issues, outcomes, agentOutput) {
+function renderPrBody(items, outcomes, agentOutput) {
   const lines = [];
-  lines.push(`Automated batch fix for ${issues.length} Sentry issue(s).`);
+  lines.push(`Automated batch fix for ${items.length} Sentry issue(s).`);
+  lines.push("");
+  lines.push("## Overview");
   lines.push("");
   lines.push("| Issue | Title | Outcome |");
   lines.push("| --- | --- | --- |");
-  for (const issue of issues) {
+  for (const { issue } of items) {
     const o2 = outcomes.get(issue.shortId);
     const outcome = o2?.kind === "fixed" ? "fixed" : `skipped: ${o2?.reason ?? "unknown"}`;
-    lines.push(`| [\`${issue.shortId}\`](${issue.permalink}) | ${issue.title.replace(/\|/g, "\\|")} | ${outcome} |`);
+    lines.push(`| [\`${issue.shortId}\`](${issue.permalink}) | ${escapeCell(issue.title)} | ${outcome} |`);
   }
   lines.push("");
+  lines.push("## Issue details");
+  lines.push("");
+  for (const { issue, event } of items) {
+    const o2 = outcomes.get(issue.shortId);
+    const outcome = o2?.kind === "fixed" ? "**fixed**" : `**skipped** \u2014 ${o2?.reason ?? "unknown"}`;
+    lines.push(`### [\`${issue.shortId}\`](${issue.permalink}) ${issue.title}`);
+    lines.push("");
+    lines.push(`- Sentry: ${issue.permalink}`);
+    lines.push(`- Outcome: ${outcome}`);
+    lines.push(`- Event count (24h): ${issue.count}`);
+    if (issue.culprit) lines.push(`- Culprit: \`${issue.culprit}\``);
+    if (event?.platform) lines.push(`- Platform: ${event.platform}`);
+    if (event?.request?.url) lines.push(`- Request: \`${event.request.method ?? "GET"} ${event.request.url}\``);
+    lines.push("");
+    if (event?.exceptionType || event?.exceptionValue) {
+      lines.push("Exception:");
+      lines.push("");
+      lines.push("```");
+      lines.push(`${event.exceptionType ?? ""}: ${event.exceptionValue ?? ""}`.trim());
+      lines.push("```");
+      lines.push("");
+    } else if (event?.message) {
+      lines.push("Message:");
+      lines.push("");
+      lines.push("```");
+      lines.push(event.message);
+      lines.push("```");
+      lines.push("");
+    }
+    if (event && event.frames.length > 0) {
+      const inApp = event.frames.filter((f) => f.inApp);
+      const frames = (inApp.length > 0 ? inApp : event.frames).slice(-8);
+      lines.push("<details><summary>Stack trace (top 8 frames, most recent last)</summary>");
+      lines.push("");
+      lines.push("```");
+      for (const f of frames) {
+        const loc = [f.filename, f.lineno].filter(Boolean).join(":");
+        lines.push(`  at ${f.function ?? "<anonymous>"} (${loc || "unknown"})`);
+        if (f.contextLine) lines.push(`    | ${f.contextLine.trim()}`);
+      }
+      lines.push("```");
+      lines.push("");
+      lines.push("</details>");
+      lines.push("");
+    }
+  }
   lines.push("## Agent summary");
   lines.push("");
   const trimmed2 = agentOutput.trim();
@@ -34230,6 +34278,9 @@ function renderPrBody(issues, outcomes, agentOutput) {
   lines.push("");
   lines.push("_This PR was generated automatically. Please review carefully before merging._");
   return lines.join("\n");
+}
+function escapeCell(s) {
+  return s.replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
 main().catch((err) => {
   const message = err instanceof Error ? err.stack ?? err.message : String(err);

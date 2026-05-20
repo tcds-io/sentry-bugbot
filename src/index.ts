@@ -1,7 +1,7 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { loadConfig } from "./config.js";
-import { SentryClient, type SentryIssue } from "./sentry.js";
+import { SentryClient, type SentryEvent, type SentryIssue } from "./sentry.js";
 import { buildBatchPrompt, parseBatchSummary, type BatchResult } from "./prompt.js";
 import { getAgent } from "./agents/index.js";
 import { GitRepo } from "./git.js";
@@ -78,7 +78,7 @@ async function main(): Promise<void> {
 
   await git.push(branch);
   const title = `fix(sentry): batch fix for ${issues.length} issue(s)`;
-  const body = renderPrBody(items.map((i) => i.issue), outcomesByShortId, result.output);
+  const body = renderPrBody(items, outcomesByShortId, result.output);
   const pr = await createPr(octokit, owner, repo, { head: branch, base: baseBranch, title, body });
   core.info(`Opened PR #${pr.number}`);
 
@@ -135,21 +135,69 @@ async function getBaseSha(git: GitRepo, branch: string): Promise<string> {
 }
 
 function renderPrBody(
-  issues: SentryIssue[],
+  items: { issue: SentryIssue; event: SentryEvent | null }[],
   outcomes: Map<string, LocalOutcome>,
   agentOutput: string,
 ): string {
   const lines: string[] = [];
-  lines.push(`Automated batch fix for ${issues.length} Sentry issue(s).`);
+  lines.push(`Automated batch fix for ${items.length} Sentry issue(s).`);
+  lines.push("");
+  lines.push("## Overview");
   lines.push("");
   lines.push("| Issue | Title | Outcome |");
   lines.push("| --- | --- | --- |");
-  for (const issue of issues) {
+  for (const { issue } of items) {
     const o = outcomes.get(issue.shortId);
     const outcome = o?.kind === "fixed" ? "fixed" : `skipped: ${o?.reason ?? "unknown"}`;
-    lines.push(`| [\`${issue.shortId}\`](${issue.permalink}) | ${issue.title.replace(/\|/g, "\\|")} | ${outcome} |`);
+    lines.push(`| [\`${issue.shortId}\`](${issue.permalink}) | ${escapeCell(issue.title)} | ${outcome} |`);
   }
   lines.push("");
+  lines.push("## Issue details");
+  lines.push("");
+  for (const { issue, event } of items) {
+    const o = outcomes.get(issue.shortId);
+    const outcome = o?.kind === "fixed" ? "**fixed**" : `**skipped** — ${o?.reason ?? "unknown"}`;
+    lines.push(`### [\`${issue.shortId}\`](${issue.permalink}) ${issue.title}`);
+    lines.push("");
+    lines.push(`- Sentry: ${issue.permalink}`);
+    lines.push(`- Outcome: ${outcome}`);
+    lines.push(`- Event count (24h): ${issue.count}`);
+    if (issue.culprit) lines.push(`- Culprit: \`${issue.culprit}\``);
+    if (event?.platform) lines.push(`- Platform: ${event.platform}`);
+    if (event?.request?.url) lines.push(`- Request: \`${event.request.method ?? "GET"} ${event.request.url}\``);
+    lines.push("");
+    if (event?.exceptionType || event?.exceptionValue) {
+      lines.push("Exception:");
+      lines.push("");
+      lines.push("```");
+      lines.push(`${event.exceptionType ?? ""}: ${event.exceptionValue ?? ""}`.trim());
+      lines.push("```");
+      lines.push("");
+    } else if (event?.message) {
+      lines.push("Message:");
+      lines.push("");
+      lines.push("```");
+      lines.push(event.message);
+      lines.push("```");
+      lines.push("");
+    }
+    if (event && event.frames.length > 0) {
+      const inApp = event.frames.filter((f) => f.inApp);
+      const frames = (inApp.length > 0 ? inApp : event.frames).slice(-8);
+      lines.push("<details><summary>Stack trace (top 8 frames, most recent last)</summary>");
+      lines.push("");
+      lines.push("```");
+      for (const f of frames) {
+        const loc = [f.filename, f.lineno].filter(Boolean).join(":");
+        lines.push(`  at ${f.function ?? "<anonymous>"} (${loc || "unknown"})`);
+        if (f.contextLine) lines.push(`    | ${f.contextLine.trim()}`);
+      }
+      lines.push("```");
+      lines.push("");
+      lines.push("</details>");
+      lines.push("");
+    }
+  }
   lines.push("## Agent summary");
   lines.push("");
   const trimmed = agentOutput.trim();
@@ -160,6 +208,10 @@ function renderPrBody(
   lines.push("");
   lines.push("_This PR was generated automatically. Please review carefully before merging._");
   return lines.join("\n");
+}
+
+function escapeCell(s: string): string {
+  return s.replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
 
 main().catch((err) => {
