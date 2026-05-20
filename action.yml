@@ -31,7 +31,7 @@ inputs:
     description: Sentry base URL (for self-hosted). Defaults to https://sentry.io.
     required: false
     default: "https://sentry.io"
-  maxIssues:
+  max-issues:
     description: Maximum number of issues to attempt per run.
     required: false
     default: "5"
@@ -42,15 +42,15 @@ inputs:
       code style, files to avoid, etc.).
     required: false
     default: ""
-  baseBranch:
+  base-branch:
     description: Branch PRs target. Defaults to the repository default branch.
     required: false
     default: ""
-  githubToken:
+  github-token:
     description: GitHub token used for pushing branches and creating PRs.
     required: false
     default: ${{ github.token }}
-  dryRun:
+  dry-run:
     description: If true, skip push/PR and reset the branch.
     required: false
     default: "false"
