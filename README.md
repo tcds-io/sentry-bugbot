@@ -114,7 +114,11 @@ Required scopes:
 - `project:read` — list issues for the configured project.
 - `org:read` — resolve the configured organization slug.
 
-> A token created with only `org:ci` is **not** sufficient — that scope covers CI-related actions but does not grant access to read issues or events. Use the three scopes above. If any are missing, the action fails with a `403 Forbidden` from the Sentry API.
+Optional scope (recommended):
+
+- `event:write` — post a back-link comment on each fixed Sentry issue (`🤖 sentry-bugbot opened PR …`). Without it the run still succeeds, but you'll see one `core.warning(...)` in the job log and Sentry won't be annotated.
+
+> A token created with only `org:ci` is **not** sufficient — that scope covers CI-related actions but does not grant access to read issues or events. Use the three required scopes above. If any are missing, the action fails with a `403 Forbidden` from the Sentry API.
 
 Setup:
 

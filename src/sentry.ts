@@ -112,6 +112,38 @@ export class SentryClient {
     };
   }
 
+  /**
+   * Adds a note (comment) to a Sentry issue. Best-effort: returns false on any
+   * failure rather than throwing, so a missing scope doesn't break the run.
+   * Requires the token to have `event:write` (or `event:admin`).
+   */
+  async addIssueComment(issueId: string, text: string): Promise<boolean> {
+    const url = new URL(`/api/0/issues/${issueId}/comments/`, this.baseUrl);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ data: { text } }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        core.warning(
+          `Sentry comment POST failed (${res.status} ${res.statusText}) for issue ${issueId}: ${body.slice(0, 200)}`,
+        );
+        return false;
+      }
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      core.warning(`Sentry comment POST threw for issue ${issueId}: ${message}`);
+      return false;
+    }
+  }
+
   private async fetch(url: URL): Promise<Response> {
     const res = await this.rawFetch(url);
     if (!res.ok) {
