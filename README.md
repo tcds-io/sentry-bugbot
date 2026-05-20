@@ -71,11 +71,13 @@ Or, with a Claude Pro/Max subscription via OAuth token:
 | `sentry-org` | yes | — | Sentry organization slug. |
 | `sentry-project` | yes | — | Sentry project slug. |
 | `sentry-url` | no | `https://sentry.io` | Sentry base URL (for self-hosted or regional). |
-| `maxIssues` | no | `5` | Top-N issues (by event count) attempted per run |
+| `max-issues` | no | `5` | Top-N issues (by event count) attempted per run |
 | `additional-instructions` | no | `""` | Extra free-form instructions appended to the agent prompt (commit message format, test framework, files to avoid, etc.) |
-| `baseBranch` | no | repo default | Branch PRs target |
-| `githubToken` | no | `${{ github.token }}` | Token for branch push + PR creation |
-| `dryRun` | no | `false` | If true, skip push/PR and reset the branch |
+| `base-branch` | no | repo default | Branch PRs target |
+| `github-token` | no | `${{ github.token }}` | Token for branch push + PR creation |
+| `dry-run` | no | `false` | If true, skip push/PR and reset the branch |
+
+> The previous camelCase names (`maxIssues`, `baseBranch`, `githubToken`, `dryRun`) are still accepted for backward compatibility but emit a deprecation warning. Migrate to the kebab-case names — the camelCase aliases will be removed in a future release.
 
 ### Customizing agent behavior
 
@@ -118,7 +120,7 @@ Caveats:
 
 ## How it works
 
-1. Fetches up to `maxIssues` unresolved Sentry issues from the last 24h, ordered by frequency.
+1. Fetches up to `max-issues` unresolved Sentry issues from the last 24h, ordered by frequency.
 2. Creates a single batch branch `sentry-fix/batch-<utc-timestamp>`.
 3. Hands every issue (title, stack trace, breadcrumbs, request) to the selected agent CLI in **one session**, with instructions to fix each root cause, add a regression test where practical, and commit per fix using `fix(sentry): <SHORTID> <title>`. Issues sharing a root cause are coalesced into a single commit referencing every affected shortId, which eliminates duplicate fixes on related errors.
 4. Pushes the branch and opens one PR listing every issue and its outcome.

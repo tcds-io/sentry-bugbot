@@ -19739,10 +19739,10 @@ Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
       (0, command_1.issueCommand)("error", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
     exports2.error = error;
-    function warning3(message, properties = {}) {
+    function warning4(message, properties = {}) {
       (0, command_1.issueCommand)("warning", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
-    exports2.warning = warning3;
+    exports2.warning = warning4;
     function notice(message, properties = {}) {
       (0, command_1.issueCommand)("notice", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
@@ -28709,10 +28709,10 @@ function loadConfig() {
       project: core.getInput("sentry-project", { required: true }),
       url: core.getInput("sentry-url") || "https://sentry.io"
     },
-    maxIssues: Number.parseInt(core.getInput("maxIssues") || "5", 10),
-    baseBranch: core.getInput("baseBranch") || "",
-    githubToken: core.getInput("githubToken", { required: true }),
-    dryRun: core.getBooleanInput("dryRun") || false,
+    maxIssues: Number.parseInt(getInputCompat("max-issues", "maxIssues") || "5", 10),
+    baseBranch: getInputCompat("base-branch", "baseBranch") || "",
+    githubToken: getInputCompat("github-token", "githubToken", { required: true }),
+    dryRun: getBooleanInputCompat("dry-run", "dryRun"),
     additionalInstructions: core.getInput("additional-instructions") || ""
   };
   const cfg = ConfigSchema.parse(raw);
@@ -28723,6 +28723,27 @@ function loadConfig() {
   core.setSecret(cfg.githubToken);
   core.setSecret(cfg.sentry.token);
   return cfg;
+}
+function getInputCompat(kebab, camel, opts) {
+  const kebabValue = core.getInput(kebab);
+  if (kebabValue) return kebabValue;
+  const camelValue = core.getInput(camel);
+  if (camelValue) {
+    core.warning(`Input '${camel}' is deprecated; use '${kebab}' instead.`);
+    return camelValue;
+  }
+  if (opts?.required) {
+    return core.getInput(kebab, { required: true });
+  }
+  return "";
+}
+function getBooleanInputCompat(kebab, camel) {
+  if (core.getInput(kebab)) return core.getBooleanInput(kebab);
+  if (core.getInput(camel)) {
+    core.warning(`Input '${camel}' is deprecated; use '${kebab}' instead.`);
+    return core.getBooleanInput(camel);
+  }
+  return false;
 }
 
 // src/sentry.ts
