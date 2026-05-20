@@ -28810,6 +28810,37 @@ var SentryClient = class {
       tags
     };
   }
+  /**
+   * Adds a note (comment) to a Sentry issue. Best-effort: returns false on any
+   * failure rather than throwing, so a missing scope doesn't break the run.
+   * Requires the token to have `event:write` (or `event:admin`).
+   */
+  async addIssueComment(issueId, text) {
+    const url = new URL(`/api/0/issues/${issueId}/comments/`, this.baseUrl);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+        body: JSON.stringify({ data: { text } })
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        core2.warning(
+          `Sentry comment POST failed (${res.status} ${res.statusText}) for issue ${issueId}: ${body.slice(0, 200)}`
+        );
+        return false;
+      }
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      core2.warning(`Sentry comment POST threw for issue ${issueId}: ${message}`);
+      return false;
+    }
+  }
   async fetch(url) {
     const res = await this.rawFetch(url);
     if (!res.ok) {
@@ -34050,9 +34081,9 @@ var GitRepo = class {
   async revparse(ref) {
     return (await this.git.revparse([ref])).trim();
   }
-  async commitMessagesSince(baseSha) {
+  async commitsSince(baseSha) {
     const log = await this.git.log({ from: baseSha, to: "HEAD" });
-    return log.all.map((c3) => c3.message);
+    return log.all.map((c3) => ({ hash: c3.hash, message: c3.message }));
   }
   async resetHard(ref) {
     await this.git.reset(["--hard", ref]);
@@ -34133,7 +34164,7 @@ async function main() {
   core7.info(`Running ${agent.name} on ${items.length} issue(s) in one session`);
   const result = await agent.run({ prompt, cwd, credentials: cfg.credentials });
   core7.info(`Agent finished (ok=${result.ok})`);
-  if (!await git.hasChanges() && (await git.commitMessagesSince(baseSha)).length === 0) {
+  if (!await git.hasChanges() && (await git.commitsSince(baseSha)).length === 0) {
     await git.resetHard(baseSha);
     const rows2 = issues.map((i2) => ({
       shortId: i2.shortId,
@@ -34148,9 +34179,10 @@ async function main() {
     core7.warning("Agent left uncommitted changes; committing as 'fix(sentry): batch leftover changes'");
     await git.commitAll("fix(sentry): batch leftover changes");
   }
-  const commitMessages = await git.commitMessagesSince(baseSha);
+  const commits = await git.commitsSince(baseSha);
   const parsed = parseBatchSummary(result.output);
-  const outcomesByShortId = buildOutcomeMap(issues, commitMessages, parsed);
+  const outcomesByShortId = buildOutcomeMap(issues, commits, parsed);
+  const fixGroups = buildFixGroups(issues, commits);
   if (cfg.dryRun) {
     await git.resetHard(baseSha);
     const rows2 = issues.map((i2) => ({
@@ -34164,9 +34196,10 @@ async function main() {
   }
   await git.push(branch);
   const title = `fix(sentry): batch fix for ${issues.length} issue(s)`;
-  const body = renderPrBody(items, outcomesByShortId, result.output);
+  const body = renderPrBody(items, outcomesByShortId, fixGroups, result.output);
   const pr = await createPr(octokit, owner, repo, { head: branch, base: baseBranch, title, body });
   core7.info(`Opened PR #${pr.number}`);
+  await annotateSentryIssues(sentry, issues, outcomesByShortId, pr);
   const rows = issues.map((i2) => {
     const local = outcomesByShortId.get(i2.shortId);
     const outcome = local?.kind === "fixed" ? { kind: "pr", number: pr.number, url: pr.url } : { kind: "skipped", reason: local?.reason ?? "not fixed" };
@@ -34174,25 +34207,69 @@ async function main() {
   });
   await writeSummary(rows);
 }
-function buildOutcomeMap(issues, commitMessages, parsed) {
-  const map = /* @__PURE__ */ new Map();
-  const fixedFromCommits = /* @__PURE__ */ new Set();
-  for (const msg of commitMessages) {
+function buildOutcomeMap(issues, commits, parsed) {
+  const commitsByShortId = /* @__PURE__ */ new Map();
+  for (const commit of commits) {
     for (const issue of issues) {
-      if (msg.includes(issue.shortId)) fixedFromCommits.add(issue.shortId);
+      if (commit.message.includes(issue.shortId)) {
+        const list = commitsByShortId.get(issue.shortId) ?? [];
+        list.push(commit);
+        commitsByShortId.set(issue.shortId, list);
+      }
     }
   }
+  const map = /* @__PURE__ */ new Map();
   for (const issue of issues) {
+    const matched = commitsByShortId.get(issue.shortId) ?? [];
+    if (matched.length > 0) {
+      const coFixed = /* @__PURE__ */ new Set();
+      for (const commit of matched) {
+        for (const peer of issues) {
+          if (peer.shortId !== issue.shortId && commit.message.includes(peer.shortId)) {
+            coFixed.add(peer.shortId);
+          }
+        }
+      }
+      map.set(issue.shortId, {
+        kind: "fixed",
+        commits: matched,
+        coFixedShortIds: [...coFixed]
+      });
+      continue;
+    }
     const parsedRow = parsed?.find((p2) => p2.shortId === issue.shortId);
-    if (fixedFromCommits.has(issue.shortId)) {
-      map.set(issue.shortId, { kind: "fixed" });
-    } else if (parsedRow?.status === "skipped") {
+    if (parsedRow?.status === "skipped") {
       map.set(issue.shortId, { kind: "skipped", reason: parsedRow.reason ?? "agent skipped" });
     } else {
       map.set(issue.shortId, { kind: "skipped", reason: "no commit referenced this issue" });
     }
   }
   return map;
+}
+function buildFixGroups(issues, commits) {
+  const groups = [];
+  for (const commit of commits) {
+    const shortIds = issues.filter((i2) => commit.message.includes(i2.shortId)).map((i2) => i2.shortId);
+    if (shortIds.length > 0) groups.push({ commit, shortIds });
+  }
+  return groups;
+}
+async function annotateSentryIssues(sentry, issues, outcomes, pr) {
+  let any403 = false;
+  for (const issue of issues) {
+    const o2 = outcomes.get(issue.shortId);
+    if (o2?.kind !== "fixed") continue;
+    const shaList = o2.commits.map((c3) => c3.hash.slice(0, 7)).join(", ");
+    const coFixed = o2.coFixedShortIds.length > 0 ? ` (co-fixed with ${o2.coFixedShortIds.join(", ")})` : "";
+    const text = `\u{1F916} sentry-bugbot opened PR ${pr.url} to fix this issue${coFixed}. Fix commit(s): ${shaList}.`;
+    const ok = await sentry.addIssueComment(issue.id, text);
+    if (!ok) any403 = true;
+  }
+  if (any403) {
+    core7.warning(
+      "Could not post sentry-bugbot back-link to one or more Sentry issues. The token likely lacks the `event:write` scope. See README -> Sentry token."
+    );
+  }
 }
 function timestamp() {
   const d = /* @__PURE__ */ new Date();
@@ -34206,20 +34283,36 @@ async function getBaseSha(git, branch) {
     return await git.revparse(branch);
   }
 }
-function renderPrBody(items, outcomes, agentOutput) {
+function renderPrBody(items, outcomes, fixGroups, agentOutput) {
   const lines = [];
-  lines.push(`Automated batch fix for ${items.length} Sentry issue(s).`);
+  const fixedCount = [...outcomes.values()].filter((o2) => o2.kind === "fixed").length;
+  lines.push(`Automated batch fix: ${fixedCount} of ${items.length} Sentry issue(s) addressed across ${fixGroups.length} commit(s).`);
   lines.push("");
   lines.push("## Overview");
   lines.push("");
-  lines.push("| Issue | Title | Outcome |");
-  lines.push("| --- | --- | --- |");
+  lines.push("| Issue | Title | Outcome | Commit |");
+  lines.push("| --- | --- | --- | --- |");
   for (const { issue } of items) {
     const o2 = outcomes.get(issue.shortId);
     const outcome = o2?.kind === "fixed" ? "fixed" : `skipped: ${o2?.reason ?? "unknown"}`;
-    lines.push(`| [\`${issue.shortId}\`](${issue.permalink}) | ${escapeCell(issue.title)} | ${outcome} |`);
+    const commitCell = o2?.kind === "fixed" ? o2.commits.map((c3) => `\`${c3.hash.slice(0, 7)}\``).join(", ") : "\u2014";
+    lines.push(
+      `| [\`${issue.shortId}\`](${issue.permalink}) | ${escapeCell(issue.title)} | ${outcome} | ${commitCell} |`
+    );
   }
   lines.push("");
+  if (fixGroups.length > 0) {
+    lines.push("## Fixes (grouped by commit)");
+    lines.push("");
+    lines.push("Issues sharing a root cause are fixed by a single commit referencing every affected shortId:");
+    lines.push("");
+    for (const group of fixGroups) {
+      const subject = group.commit.message.split("\n")[0] ?? "";
+      const ids = group.shortIds.map((id) => `\`${id}\``).join(", ");
+      lines.push(`- \`${group.commit.hash.slice(0, 7)}\` \u2014 ${ids}: ${escapeCell(subject)}`);
+    }
+    lines.push("");
+  }
   lines.push("## Issue details");
   lines.push("");
   for (const { issue, event } of items) {
@@ -34229,6 +34322,14 @@ function renderPrBody(items, outcomes, agentOutput) {
     lines.push("");
     lines.push(`- Sentry: ${issue.permalink}`);
     lines.push(`- Outcome: ${outcome}`);
+    if (o2?.kind === "fixed") {
+      const shas = o2.commits.map((c3) => `\`${c3.hash.slice(0, 7)}\``).join(", ");
+      lines.push(`- Fix commit(s): ${shas}`);
+      if (o2.coFixedShortIds.length > 0) {
+        const peers = o2.coFixedShortIds.map((id) => `\`${id}\``).join(", ");
+        lines.push(`- Co-fixed with: ${peers} (shared root cause)`);
+      }
+    }
     lines.push(`- Event count (24h): ${issue.count}`);
     if (issue.culprit) lines.push(`- Culprit: \`${issue.culprit}\``);
     if (event?.platform) lines.push(`- Platform: ${event.platform}`);
