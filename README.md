@@ -44,6 +44,7 @@ jobs:
           sentry-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
           sentry-org: my-org
           sentry-project: my-project
+          max-issues: 5
 ```
 
 Or, with a Claude Pro/Max subscription via OAuth token:
