@@ -104,6 +104,27 @@ Or, with a Claude Pro/Max subscription via OAuth token:
 - `credentials-type: api-key` — `credentials-token` is set as `ANTHROPIC_API_KEY` (claude) or `OPENAI_API_KEY` (codex). Billed via the provider's standard API.
 - `credentials-type: auth_token` — `credentials-token` is set as `CLAUDE_CODE_OAUTH_TOKEN` and binds the run to a Claude Pro/Max subscription. Only supported when `agent: claude`.
 
+## Sentry token
+
+The `sentry-token` input must be a Sentry **Internal Integration** token (Org Settings → Developer Settings → New Internal Integration) or a User Auth Token with sufficient scopes.
+
+Required scopes:
+
+- `event:read` — fetch the latest event for each issue (stack trace, breadcrumbs, request).
+- `project:read` — list issues for the configured project.
+- `org:read` — resolve the configured organization slug.
+
+> A token created with only `org:ci` is **not** sufficient — that scope covers CI-related actions but does not grant access to read issues or events. Use the three scopes above. If any are missing, the action fails with a `403 Forbidden` from the Sentry API.
+
+Setup:
+
+1. In Sentry, go to **Settings → Developer Settings → New Internal Integration**.
+2. Set the three permissions above to **Read**.
+3. Save, copy the generated token, and store it as a GitHub Actions secret (e.g. `SENTRY_AUTH_TOKEN`).
+4. Reference it from your workflow as `sentry-token: ${{ secrets.SENTRY_AUTH_TOKEN }}`.
+
+For self-hosted or regional Sentry, also set `sentry-url` (e.g. `https://de.sentry.io`).
+
 ## Using a Claude Pro/Max subscription
 
 Instead of paying per-token via the Anthropic API, you can bind the run to a Claude Pro/Max subscription using an OAuth token.
