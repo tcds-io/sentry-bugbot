@@ -2,6 +2,7 @@ import * as core from "@actions/core";
 
 export type Outcome =
   | { kind: "pr"; number: number; url: string }
+  | { kind: "deferred"; reason: string; number: number; url: string }
   | { kind: "skipped"; reason: string }
   | { kind: "error"; message: string };
 
@@ -23,6 +24,9 @@ export async function writeSummary(rows: Row[]): Promise<void> {
     switch (r.outcome.kind) {
       case "pr":
         outcome = `[PR #${r.outcome.number}](${r.outcome.url})`;
+        break;
+      case "deferred":
+        outcome = `deferred ([PR #${r.outcome.number}](${r.outcome.url})): ${r.outcome.reason}`;
         break;
       case "skipped":
         outcome = `skipped: ${r.outcome.reason}`;

@@ -152,6 +152,14 @@ Caveats:
 4. Pushes the branch and opens one PR listing every issue and its outcome.
 5. Writes a job summary table mapping each issue to its outcome.
 
+### Investigation notes (`.bugbot/`)
+
+For every issue it looks at, the agent writes a note to `.bugbot/<project>/<SHORTID>.md` with three sections — **Findings**, **Proposed solution**, **Risks** — and commits it alongside the work. These notes are committed to the repo, so on later runs the agent is shown any prior note for the same issue and refines it instead of re-investigating from scratch.
+
+### Root-cause vs. noise (deferral)
+
+The agent is instructed to apply a code change only when it addresses the **root cause**. If the only available change would merely silence the Sentry error (swallowing exceptions, blanket guards, broadened catches, event filtering) — or if the fix risk is judged too high (critical paths, broad blast radius, uncertain correctness) — it **defers**: it writes the note with a recommendation but makes no code change, and marks the issue `deferred`. Deferred issues still appear in the PR (the note is committed) and get a back-link comment in Sentry, but no patch is proposed. This keeps the bot from trading real bugs for a quiet dashboard.
+
 ## Development
 
 ```bash

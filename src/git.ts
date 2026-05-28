@@ -7,8 +7,8 @@ export class GitRepo {
   }
 
   async configureBot(): Promise<void> {
-    await this.git.addConfig("user.name", "sentry-errors-fixer[bot]");
-    await this.git.addConfig("user.email", "sentry-errors-fixer@users.noreply.github.com");
+    await this.git.addConfig("user.name", "sentry-bugbot[bot]");
+    await this.git.addConfig("user.email", "sentry-bugbot@users.noreply.github.com");
   }
 
   async defaultBranch(): Promise<string> {

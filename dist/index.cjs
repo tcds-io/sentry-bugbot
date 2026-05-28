@@ -28873,7 +28873,10 @@ var SentryClient = class {
 
 // src/prompt.ts
 var SUMMARY_MARKER = "===SENTRY_FIXER_SUMMARY===";
-function buildBatchPrompt(items, additionalInstructions = "") {
+function noteRelativePath(project, shortId) {
+  return `.bugbot/${project}/${shortId}.md`;
+}
+function buildBatchPrompt(items, additionalInstructions = "", project = "") {
   const lines = [];
   lines.push(`# Sentry batch fix: ${items.length} issue(s)`);
   lines.push("");
@@ -28881,21 +28884,30 @@ function buildBatchPrompt(items, additionalInstructions = "") {
   lines.push("");
   lines.push("## Rules");
   lines.push("");
-  lines.push("1. Work through each issue in order. For each one, investigate the root cause and apply the minimal fix.");
-  lines.push("2. After completing the changes for an issue, commit them: `git add -A && git commit -m 'fix(sentry): <SHORTID> <short title>'`. The commit message MUST start with `fix(sentry): <SHORTID>` exactly \u2014 the runner parses this.");
-  lines.push("3. If two or more issues share a single root cause, fix them with ONE code change and make ONE commit whose message references every affected shortId, e.g. `fix(sentry): PROJ-1 PROJ-2 description`. Do not duplicate fixes.");
-  lines.push("4. If you cannot reproduce or fix an issue with confidence, skip it \u2014 do not make a commit for it.");
-  lines.push("5. Add regression tests where practical. Keep diffs small and focused. Do not refactor unrelated code.");
-  lines.push("6. Do NOT push, create PRs, or change branches. The runner handles that.");
-  lines.push(`7. When fully done with every issue, print a single line containing exactly: ${SUMMARY_MARKER}`);
-  lines.push("   followed by a JSON object on the next line, e.g.:");
-  lines.push('   {"results":[{"shortId":"PROJ-1","status":"fixed"},{"shortId":"PROJ-2","status":"skipped","reason":"could not reproduce"}]}');
+  lines.push("1. Work through each issue in order. For each one, investigate the root cause first.");
+  lines.push("2. Before writing any code, decide whether a real fix is warranted. A fix is only worth applying when it addresses the ROOT CAUSE. Do NOT apply a code change \u2014 instead DEFER \u2014 when either is true:");
+  lines.push("   - **Noise-only fix:** the change would merely silence the Sentry error rather than fix the underlying problem (e.g. swallowing/broadening a catch, adding a blanket null/optional guard that hides a deeper bug, wrapping in try/except, lowering a log level, filtering the event). Suppressing the symptom is NOT a fix.");
+  lines.push("   - **Risk too high:** a correct fix would touch critical paths, have a broad blast radius, change behaviour in ways you cannot verify, or you are not confident it is correct.");
+  lines.push("   When you defer, write the note (rule 3) with a clear recommendation for what a safe real fix would require, make NO code change, and mark the issue `deferred` in the summary.");
+  lines.push(`3. For EVERY issue you investigate \u2014 fixed, deferred, or skipped \u2014 write your analysis to \`.bugbot/${project || "<project>"}/<SHORTID>.md\` with exactly these three sections:`);
+  lines.push("   - `## Findings` \u2014 why this bug happens and the relevant context (code paths, inputs, environment).");
+  lines.push("   - `## Proposed solution` \u2014 how you approached the fix and why it resolves the root cause. If deferred, state that the fix is deferred, WHY (noise-only or risk too high), and what a safe real fix would require. If skipped, explain what you tried and why you could not locate/reproduce it.");
+  lines.push("   - `## Risks` \u2014 what could go wrong if this patch ships (edge cases, behavioral changes, areas needing extra review).");
+  lines.push('   If a prior note already exists for the issue (it will be shown below under "Prior bugbot note"), refine and update it rather than discarding its history.');
+  lines.push("4. Commit the note together with the code fix for that issue: `git add -A && git commit -m 'fix(sentry): <SHORTID> <short title>'`. The commit message MUST start with `fix(sentry): <SHORTID>` exactly \u2014 the runner uses that prefix to tell a real fix from a notes-only commit. For a deferred or skipped issue, commit ONLY the note with `docs(bugbot): <SHORTID> investigation notes` \u2014 never use the `fix(sentry):` prefix when you did not change code.");
+  lines.push("5. If two or more issues share a single root cause, fix them with ONE code change and make ONE commit whose message references every affected shortId, e.g. `fix(sentry): PROJ-1 PROJ-2 description`. Still write a note file for each affected shortId. Do not duplicate fixes.");
+  lines.push("6. If you cannot reproduce or locate an issue with confidence, skip it (status `skipped`); still write its note per rule 3.");
+  lines.push("7. Add regression tests where practical. Keep diffs small and focused. Do not refactor unrelated code.");
+  lines.push("8. Do NOT push, create PRs, or change branches. The runner handles that.");
+  lines.push(`9. When fully done with every issue, print a single line containing exactly: ${SUMMARY_MARKER}`);
+  lines.push("   followed by a JSON object on the next line. `status` is one of `fixed`, `deferred`, or `skipped`; include a `reason` for deferred and skipped. Example:");
+  lines.push('   {"results":[{"shortId":"PROJ-1","status":"fixed"},{"shortId":"PROJ-2","status":"deferred","reason":"noise-only: a real fix needs a schema migration"},{"shortId":"PROJ-3","status":"skipped","reason":"could not reproduce"}]}');
   lines.push("");
   const extra = additionalInstructions.trim();
   if (extra) {
     lines.push("## Additional project-specific instructions");
     lines.push("");
-    lines.push("The repository owner has provided the following instructions. They take precedence over the generic rules above when they conflict (except for rule 6 \u2014 never push or open PRs yourself).");
+    lines.push("The repository owner has provided the following instructions. They take precedence over the generic rules above when they conflict (except for rule 8 \u2014 never push or open PRs yourself).");
     lines.push("");
     lines.push(extra);
     lines.push("");
@@ -28903,14 +28915,25 @@ function buildBatchPrompt(items, additionalInstructions = "") {
   lines.push("---");
   lines.push("");
   for (let i2 = 0; i2 < items.length; i2++) {
-    const { issue, event } = items[i2];
+    const { issue, event, priorNote } = items[i2];
     lines.push(`## Issue ${i2 + 1}/${items.length}: ${issue.shortId} \u2014 ${issue.title}`);
     lines.push("");
     lines.push(`Sentry link: ${issue.permalink}`);
     lines.push(`Event count (24h window): ${issue.count}`);
     if (issue.culprit) lines.push(`Culprit: ${issue.culprit}`);
+    lines.push(`Note file to write/update: \`${noteRelativePath(project || "<project>", issue.shortId)}\``);
     lines.push("");
     appendEventDetails(lines, event);
+    if (priorNote && priorNote.trim()) {
+      lines.push(`### Prior bugbot note (${noteRelativePath(project || "<project>", issue.shortId)})`);
+      lines.push("");
+      lines.push("This issue was investigated in an earlier run. Build on this; do not start from scratch.");
+      lines.push("");
+      lines.push("```markdown");
+      lines.push(priorNote.trim());
+      lines.push("```");
+      lines.push("");
+    }
     lines.push("---");
     lines.push("");
   }
@@ -28990,6 +29013,10 @@ function parseBatchSummary(output) {
   }
 }
 
+// src/index.ts
+var import_promises = require("node:fs/promises");
+var import_node_path2 = require("node:path");
+
 // src/agents/claude.ts
 var core4 = __toESM(require_core(), 1);
 
@@ -29040,7 +29067,7 @@ async function runClaude(opts) {
   const env = opts.credentials.type === "api-key" ? { ANTHROPIC_API_KEY: opts.credentials.token } : { CLAUDE_CODE_OAUTH_TOKEN: opts.credentials.token };
   const res = await exec(
     "claude",
-    ["-p", opts.prompt, "--permission-mode", "acceptEdits"],
+    ["-p", opts.prompt, "--dangerously-skip-permissions"],
     {
       cwd: opts.cwd,
       env
@@ -34051,8 +34078,8 @@ var GitRepo = class {
     this.git = esm_default({ baseDir: cwd });
   }
   async configureBot() {
-    await this.git.addConfig("user.name", "sentry-errors-fixer[bot]");
-    await this.git.addConfig("user.email", "sentry-errors-fixer@users.noreply.github.com");
+    await this.git.addConfig("user.name", "sentry-bugbot[bot]");
+    await this.git.addConfig("user.email", "sentry-bugbot@users.noreply.github.com");
   }
   async defaultBranch() {
     const remoteHead = await this.git.revparse(["--abbrev-ref", "origin/HEAD"]).catch(() => "");
@@ -34118,6 +34145,9 @@ async function writeSummary(rows) {
       case "pr":
         outcome = `[PR #${r2.outcome.number}](${r2.outcome.url})`;
         break;
+      case "deferred":
+        outcome = `deferred ([PR #${r2.outcome.number}](${r2.outcome.url})): ${r2.outcome.reason}`;
+        break;
       case "skipped":
         outcome = `skipped: ${r2.outcome.reason}`;
         break;
@@ -34158,9 +34188,15 @@ async function main() {
   const branch = `sentry-fix/batch-${timestamp()}`;
   await git.checkoutNewBranch(branch, baseBranch);
   const items = await Promise.all(
-    issues.map(async (issue) => ({ issue, event: await sentry.getLatestEvent(issue.id) }))
+    issues.map(async (issue) => ({
+      issue,
+      event: await sentry.getLatestEvent(issue.id),
+      priorNote: await readPriorNote(cwd, cfg.sentry.project, issue.shortId)
+    }))
   );
-  const prompt = buildBatchPrompt(items, cfg.additionalInstructions);
+  const notesFound = items.filter((i2) => i2.priorNote).length;
+  if (notesFound > 0) core7.info(`Found ${notesFound} prior bugbot note(s) to reuse`);
+  const prompt = buildBatchPrompt(items, cfg.additionalInstructions, cfg.sentry.project);
   core7.info(`Running ${agent.name} on ${items.length} issue(s) in one session`);
   const result = await agent.run({ prompt, cwd, credentials: cfg.credentials });
   core7.info(`Agent finished (ok=${result.ok})`);
@@ -34195,53 +34231,58 @@ async function main() {
     return;
   }
   await git.push(branch);
-  const title = `fix(sentry): batch fix for ${issues.length} issue(s)`;
+  const fixedCount = [...outcomesByShortId.values()].filter((o2) => o2.kind === "fixed").length;
+  const deferredCount = [...outcomesByShortId.values()].filter((o2) => o2.kind === "deferred").length;
+  const title = prTitle(fixedCount, deferredCount);
   const body = renderPrBody(items, outcomesByShortId, fixGroups, result.output);
   const pr = await createPr(octokit, owner, repo, { head: branch, base: baseBranch, title, body });
   core7.info(`Opened PR #${pr.number}`);
   await annotateSentryIssues(sentry, issues, outcomesByShortId, pr);
   const rows = issues.map((i2) => {
     const local = outcomesByShortId.get(i2.shortId);
-    const outcome = local?.kind === "fixed" ? { kind: "pr", number: pr.number, url: pr.url } : { kind: "skipped", reason: local?.reason ?? "not fixed" };
+    let outcome;
+    if (local?.kind === "fixed") {
+      outcome = { kind: "pr", number: pr.number, url: pr.url };
+    } else if (local?.kind === "deferred") {
+      outcome = { kind: "deferred", reason: local.reason, number: pr.number, url: pr.url };
+    } else {
+      outcome = { kind: "skipped", reason: local?.reason ?? "not fixed" };
+    }
     return { shortId: i2.shortId, title: i2.title, permalink: i2.permalink, outcome };
   });
   await writeSummary(rows);
 }
+function isFixCommit(message) {
+  return /^fix\(sentry\):/.test(message.trimStart());
+}
+function fixCommitsFor(issue, commits) {
+  return commits.filter((c3) => isFixCommit(c3.message) && c3.message.includes(issue.shortId));
+}
 function buildOutcomeMap(issues, commits, parsed) {
-  const commitsByShortId = /* @__PURE__ */ new Map();
-  for (const commit of commits) {
-    for (const issue of issues) {
-      if (commit.message.includes(issue.shortId)) {
-        const list = commitsByShortId.get(issue.shortId) ?? [];
-        list.push(commit);
-        commitsByShortId.set(issue.shortId, list);
-      }
-    }
-  }
   const map = /* @__PURE__ */ new Map();
   for (const issue of issues) {
-    const matched = commitsByShortId.get(issue.shortId) ?? [];
-    if (matched.length > 0) {
+    const fixCommits = fixCommitsFor(issue, commits);
+    if (fixCommits.length > 0) {
       const coFixed = /* @__PURE__ */ new Set();
-      for (const commit of matched) {
+      for (const commit of fixCommits) {
         for (const peer of issues) {
           if (peer.shortId !== issue.shortId && commit.message.includes(peer.shortId)) {
             coFixed.add(peer.shortId);
           }
         }
       }
-      map.set(issue.shortId, {
-        kind: "fixed",
-        commits: matched,
-        coFixedShortIds: [...coFixed]
-      });
+      map.set(issue.shortId, { kind: "fixed", commits: fixCommits, coFixedShortIds: [...coFixed] });
       continue;
     }
     const parsedRow = parsed?.find((p2) => p2.shortId === issue.shortId);
-    if (parsedRow?.status === "skipped") {
+    if (parsedRow?.status === "deferred") {
+      map.set(issue.shortId, { kind: "deferred", reason: parsedRow.reason ?? "fix deferred (see notes)" });
+    } else if (parsedRow?.status === "skipped") {
       map.set(issue.shortId, { kind: "skipped", reason: parsedRow.reason ?? "agent skipped" });
+    } else if (parsedRow?.status === "fixed") {
+      map.set(issue.shortId, { kind: "deferred", reason: "agent reported a fix but no fix(sentry) commit was found" });
     } else {
-      map.set(issue.shortId, { kind: "skipped", reason: "no commit referenced this issue" });
+      map.set(issue.shortId, { kind: "skipped", reason: "no fix commit referenced this issue" });
     }
   }
   return map;
@@ -34249,6 +34290,7 @@ function buildOutcomeMap(issues, commits, parsed) {
 function buildFixGroups(issues, commits) {
   const groups = [];
   for (const commit of commits) {
+    if (!isFixCommit(commit.message)) continue;
     const shortIds = issues.filter((i2) => commit.message.includes(i2.shortId)).map((i2) => i2.shortId);
     if (shortIds.length > 0) groups.push({ commit, shortIds });
   }
@@ -34258,10 +34300,16 @@ async function annotateSentryIssues(sentry, issues, outcomes, pr) {
   let any403 = false;
   for (const issue of issues) {
     const o2 = outcomes.get(issue.shortId);
-    if (o2?.kind !== "fixed") continue;
-    const shaList = o2.commits.map((c3) => c3.hash.slice(0, 7)).join(", ");
-    const coFixed = o2.coFixedShortIds.length > 0 ? ` (co-fixed with ${o2.coFixedShortIds.join(", ")})` : "";
-    const text = `\u{1F916} sentry-bugbot opened PR ${pr.url} to fix this issue${coFixed}. Fix commit(s): ${shaList}.`;
+    let text;
+    if (o2?.kind === "fixed") {
+      const shaList = o2.commits.map((c3) => c3.hash.slice(0, 7)).join(", ");
+      const coFixed = o2.coFixedShortIds.length > 0 ? ` (co-fixed with ${o2.coFixedShortIds.join(", ")})` : "";
+      text = `\u{1F916} sentry-bugbot opened PR ${pr.url} to fix this issue${coFixed}. Fix commit(s): ${shaList}.`;
+    } else if (o2?.kind === "deferred") {
+      text = `\u{1F916} sentry-bugbot investigated this issue but deferred a code fix: ${o2.reason}. Analysis and a recommendation are in PR ${pr.url} under .bugbot/.`;
+    } else {
+      continue;
+    }
     const ok = await sentry.addIssueComment(issue.id, text);
     if (!ok) any403 = true;
   }
@@ -34270,6 +34318,21 @@ async function annotateSentryIssues(sentry, issues, outcomes, pr) {
       "Could not post sentry-bugbot back-link to one or more Sentry issues. The token likely lacks the `event:write` scope. See README -> Sentry token."
     );
   }
+}
+async function readPriorNote(cwd, project, shortId) {
+  const path = (0, import_node_path2.join)(cwd, noteRelativePath(project, shortId));
+  try {
+    return await (0, import_promises.readFile)(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+function prTitle(fixedCount, deferredCount) {
+  const parts = [];
+  if (fixedCount > 0) parts.push(`fix ${fixedCount}`);
+  if (deferredCount > 0) parts.push(`investigate ${deferredCount}`);
+  const what = parts.length > 0 ? parts.join(" + ") : "investigate";
+  return `fix(sentry): batch ${what} issue(s)`;
 }
 function timestamp() {
   const d = /* @__PURE__ */ new Date();
@@ -34286,18 +34349,27 @@ async function getBaseSha(git, branch) {
 function renderPrBody(items, outcomes, fixGroups, agentOutput) {
   const lines = [];
   const fixedCount = [...outcomes.values()].filter((o2) => o2.kind === "fixed").length;
-  lines.push(`Automated batch fix: ${fixedCount} of ${items.length} Sentry issue(s) addressed across ${fixGroups.length} commit(s).`);
+  const deferredCount = [...outcomes.values()].filter((o2) => o2.kind === "deferred").length;
+  lines.push(
+    `Automated batch run over ${items.length} Sentry issue(s): **${fixedCount} fixed** across ${fixGroups.length} commit(s), **${deferredCount} deferred** (investigated, fix intentionally not applied).`
+  );
   lines.push("");
+  if (deferredCount > 0) {
+    lines.push(
+      "> Deferred issues were investigated but **not** patched, because the only available change would have suppressed the Sentry noise without fixing the root cause, or the fix risk was judged too high. See each issue's `.bugbot/` note for the analysis and a recommendation."
+    );
+    lines.push("");
+  }
   lines.push("## Overview");
   lines.push("");
   lines.push("| Issue | Title | Outcome | Commit |");
   lines.push("| --- | --- | --- | --- |");
   for (const { issue } of items) {
     const o2 = outcomes.get(issue.shortId);
-    const outcome = o2?.kind === "fixed" ? "fixed" : `skipped: ${o2?.reason ?? "unknown"}`;
+    const outcome = o2?.kind === "fixed" ? "fixed" : o2?.kind === "deferred" ? `deferred: ${o2.reason}` : `skipped: ${o2?.reason ?? "unknown"}`;
     const commitCell = o2?.kind === "fixed" ? o2.commits.map((c3) => `\`${c3.hash.slice(0, 7)}\``).join(", ") : "\u2014";
     lines.push(
-      `| [\`${issue.shortId}\`](${issue.permalink}) | ${escapeCell(issue.title)} | ${outcome} | ${commitCell} |`
+      `| [\`${issue.shortId}\`](${issue.permalink}) | ${escapeCell(issue.title)} | ${escapeCell(outcome)} | ${commitCell} |`
     );
   }
   lines.push("");
@@ -34317,7 +34389,7 @@ function renderPrBody(items, outcomes, fixGroups, agentOutput) {
   lines.push("");
   for (const { issue, event } of items) {
     const o2 = outcomes.get(issue.shortId);
-    const outcome = o2?.kind === "fixed" ? "**fixed**" : `**skipped** \u2014 ${o2?.reason ?? "unknown"}`;
+    const outcome = o2?.kind === "fixed" ? "**fixed**" : o2?.kind === "deferred" ? `**deferred** \u2014 ${o2.reason}` : `**skipped** \u2014 ${o2?.reason ?? "unknown"}`;
     lines.push(`### [\`${issue.shortId}\`](${issue.permalink}) ${issue.title}`);
     lines.push("");
     lines.push(`- Sentry: ${issue.permalink}`);
