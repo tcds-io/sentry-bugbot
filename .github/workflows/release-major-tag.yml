@@ -1,0 +1,52 @@
+name: Update major version tag
+
+# When a release is published (e.g. tag 1.2.4), move the matching major-version
+# tag (v1) to the same commit so workflows can pin to `tcds-io/sentry-bugbot@v1`
+# and automatically receive patch/minor updates.
+#
+#   1.2.4 -> v1
+#   1.7.2 -> v1
+#   2.0.9 -> v2
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  update-major-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Move major version tag to this release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # Accept tags with or without a leading 'v' (1.2.4 or v1.2.4).
+          version="${RELEASE_TAG#v}"
+          major="${version%%.*}"
+
+          if ! [[ "$major" =~ ^[0-9]+$ ]]; then
+            echo "::error::Release tag '$RELEASE_TAG' has no numeric major version; nothing to do." >&2
+            exit 1
+          fi
+
+          major_tag="v${major}"
+          echo "Release '$RELEASE_TAG' -> moving '$major_tag' to $(git rev-parse --short HEAD)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Force-create the major tag at the released commit and overwrite the
+          # remote tag of the same name.
+          git tag -f "$major_tag"
+          git push origin "refs/tags/$major_tag" --force
