@@ -2,7 +2,9 @@ import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { loadConfig } from "./config.js";
 import { SentryClient, type SentryEvent, type SentryIssue } from "./sentry.js";
-import { buildBatchPrompt, parseBatchSummary, type BatchResult } from "./prompt.js";
+import { buildBatchPrompt, noteRelativePath, parseBatchSummary, type BatchResult } from "./prompt.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { getAgent } from "./agents/index.js";
 import { GitRepo } from "./git.js";
 import { createPr } from "./pr.js";
@@ -35,9 +37,15 @@ async function main(): Promise<void> {
   await git.checkoutNewBranch(branch, baseBranch);
 
   const items = await Promise.all(
-    issues.map(async (issue) => ({ issue, event: await sentry.getLatestEvent(issue.id) })),
+    issues.map(async (issue) => ({
+      issue,
+      event: await sentry.getLatestEvent(issue.id),
+      priorNote: await readPriorNote(cwd, cfg.sentry.project, issue.shortId),
+    })),
   );
-  const prompt = buildBatchPrompt(items, cfg.additionalInstructions);
+  const notesFound = items.filter((i) => i.priorNote).length;
+  if (notesFound > 0) core.info(`Found ${notesFound} prior bugbot note(s) to reuse`);
+  const prompt = buildBatchPrompt(items, cfg.additionalInstructions, cfg.sentry.project);
 
   core.info(`Running ${agent.name} on ${items.length} issue(s) in one session`);
   const result = await agent.run({ prompt, cwd, credentials: cfg.credentials });
@@ -78,7 +86,9 @@ async function main(): Promise<void> {
   }
 
   await git.push(branch);
-  const title = `fix(sentry): batch fix for ${issues.length} issue(s)`;
+  const fixedCount = [...outcomesByShortId.values()].filter((o) => o.kind === "fixed").length;
+  const deferredCount = [...outcomesByShortId.values()].filter((o) => o.kind === "deferred").length;
+  const title = prTitle(fixedCount, deferredCount);
   const body = renderPrBody(items, outcomesByShortId, fixGroups, result.output);
   const pr = await createPr(octokit, owner, repo, { head: branch, base: baseBranch, title, body });
   core.info(`Opened PR #${pr.number}`);
@@ -87,10 +97,14 @@ async function main(): Promise<void> {
 
   const rows: Row[] = issues.map((i) => {
     const local = outcomesByShortId.get(i.shortId);
-    const outcome: Outcome =
-      local?.kind === "fixed"
-        ? { kind: "pr", number: pr.number, url: pr.url }
-        : { kind: "skipped", reason: local?.reason ?? "not fixed" };
+    let outcome: Outcome;
+    if (local?.kind === "fixed") {
+      outcome = { kind: "pr", number: pr.number, url: pr.url };
+    } else if (local?.kind === "deferred") {
+      outcome = { kind: "deferred", reason: local.reason, number: pr.number, url: pr.url };
+    } else {
+      outcome = { kind: "skipped", reason: local?.reason ?? "not fixed" };
+    }
     return { shortId: i.shortId, title: i.title, permalink: i.permalink, outcome };
   });
   await writeSummary(rows);
@@ -99,6 +113,7 @@ async function main(): Promise<void> {
 type Commit = { hash: string; message: string };
 type LocalOutcome =
   | { kind: "fixed"; commits: Commit[]; coFixedShortIds: string[] }
+  | { kind: "deferred"; reason: string }
   | { kind: "skipped"; reason: string };
 
 interface FixGroup {
@@ -106,46 +121,47 @@ interface FixGroup {
   shortIds: string[];
 }
 
+// A commit only counts as a real fix when its subject starts with `fix(sentry):`.
+// Notes-only commits (`docs(bugbot):`) are written for deferred/skipped issues and
+// must NOT be mistaken for fixes.
+function isFixCommit(message: string): boolean {
+  return /^fix\(sentry\):/.test(message.trimStart());
+}
+
+function fixCommitsFor(issue: SentryIssue, commits: Commit[]): Commit[] {
+  return commits.filter((c) => isFixCommit(c.message) && c.message.includes(issue.shortId));
+}
+
 function buildOutcomeMap(
   issues: SentryIssue[],
   commits: Commit[],
   parsed: BatchResult[] | null,
 ): Map<string, LocalOutcome> {
-  const commitsByShortId = new Map<string, Commit[]>();
-  for (const commit of commits) {
-    for (const issue of issues) {
-      if (commit.message.includes(issue.shortId)) {
-        const list = commitsByShortId.get(issue.shortId) ?? [];
-        list.push(commit);
-        commitsByShortId.set(issue.shortId, list);
-      }
-    }
-  }
-
   const map = new Map<string, LocalOutcome>();
   for (const issue of issues) {
-    const matched = commitsByShortId.get(issue.shortId) ?? [];
-    if (matched.length > 0) {
+    const fixCommits = fixCommitsFor(issue, commits);
+    if (fixCommits.length > 0) {
       const coFixed = new Set<string>();
-      for (const commit of matched) {
+      for (const commit of fixCommits) {
         for (const peer of issues) {
           if (peer.shortId !== issue.shortId && commit.message.includes(peer.shortId)) {
             coFixed.add(peer.shortId);
           }
         }
       }
-      map.set(issue.shortId, {
-        kind: "fixed",
-        commits: matched,
-        coFixedShortIds: [...coFixed],
-      });
+      map.set(issue.shortId, { kind: "fixed", commits: fixCommits, coFixedShortIds: [...coFixed] });
       continue;
     }
     const parsedRow = parsed?.find((p) => p.shortId === issue.shortId);
-    if (parsedRow?.status === "skipped") {
+    if (parsedRow?.status === "deferred") {
+      map.set(issue.shortId, { kind: "deferred", reason: parsedRow.reason ?? "fix deferred (see notes)" });
+    } else if (parsedRow?.status === "skipped") {
       map.set(issue.shortId, { kind: "skipped", reason: parsedRow.reason ?? "agent skipped" });
+    } else if (parsedRow?.status === "fixed") {
+      // Agent claims fixed but produced no fix commit — treat as deferred so we don't overstate.
+      map.set(issue.shortId, { kind: "deferred", reason: "agent reported a fix but no fix(sentry) commit was found" });
     } else {
-      map.set(issue.shortId, { kind: "skipped", reason: "no commit referenced this issue" });
+      map.set(issue.shortId, { kind: "skipped", reason: "no fix commit referenced this issue" });
     }
   }
   return map;
@@ -154,6 +170,7 @@ function buildOutcomeMap(
 function buildFixGroups(issues: SentryIssue[], commits: Commit[]): FixGroup[] {
   const groups: FixGroup[] = [];
   for (const commit of commits) {
+    if (!isFixCommit(commit.message)) continue;
     const shortIds = issues.filter((i) => commit.message.includes(i.shortId)).map((i) => i.shortId);
     if (shortIds.length > 0) groups.push({ commit, shortIds });
   }
@@ -169,10 +186,16 @@ async function annotateSentryIssues(
   let any403 = false;
   for (const issue of issues) {
     const o = outcomes.get(issue.shortId);
-    if (o?.kind !== "fixed") continue;
-    const shaList = o.commits.map((c) => c.hash.slice(0, 7)).join(", ");
-    const coFixed = o.coFixedShortIds.length > 0 ? ` (co-fixed with ${o.coFixedShortIds.join(", ")})` : "";
-    const text = `🤖 sentry-bugbot opened PR ${pr.url} to fix this issue${coFixed}. Fix commit(s): ${shaList}.`;
+    let text: string;
+    if (o?.kind === "fixed") {
+      const shaList = o.commits.map((c) => c.hash.slice(0, 7)).join(", ");
+      const coFixed = o.coFixedShortIds.length > 0 ? ` (co-fixed with ${o.coFixedShortIds.join(", ")})` : "";
+      text = `🤖 sentry-bugbot opened PR ${pr.url} to fix this issue${coFixed}. Fix commit(s): ${shaList}.`;
+    } else if (o?.kind === "deferred") {
+      text = `🤖 sentry-bugbot investigated this issue but deferred a code fix: ${o.reason}. Analysis and a recommendation are in PR ${pr.url} under .bugbot/.`;
+    } else {
+      continue;
+    }
     const ok = await sentry.addIssueComment(issue.id, text);
     if (!ok) any403 = true;
   }
@@ -181,6 +204,23 @@ async function annotateSentryIssues(
       "Could not post sentry-bugbot back-link to one or more Sentry issues. The token likely lacks the `event:write` scope. See README -> Sentry token.",
     );
   }
+}
+
+async function readPriorNote(cwd: string, project: string, shortId: string): Promise<string | null> {
+  const path = join(cwd, noteRelativePath(project, shortId));
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function prTitle(fixedCount: number, deferredCount: number): string {
+  const parts: string[] = [];
+  if (fixedCount > 0) parts.push(`fix ${fixedCount}`);
+  if (deferredCount > 0) parts.push(`investigate ${deferredCount}`);
+  const what = parts.length > 0 ? parts.join(" + ") : "investigate";
+  return `fix(sentry): batch ${what} issue(s)`;
 }
 
 function timestamp(): string {
@@ -205,19 +245,33 @@ function renderPrBody(
 ): string {
   const lines: string[] = [];
   const fixedCount = [...outcomes.values()].filter((o) => o.kind === "fixed").length;
-  lines.push(`Automated batch fix: ${fixedCount} of ${items.length} Sentry issue(s) addressed across ${fixGroups.length} commit(s).`);
+  const deferredCount = [...outcomes.values()].filter((o) => o.kind === "deferred").length;
+  lines.push(
+    `Automated batch run over ${items.length} Sentry issue(s): **${fixedCount} fixed** across ${fixGroups.length} commit(s), **${deferredCount} deferred** (investigated, fix intentionally not applied).`,
+  );
   lines.push("");
+  if (deferredCount > 0) {
+    lines.push(
+      "> Deferred issues were investigated but **not** patched, because the only available change would have suppressed the Sentry noise without fixing the root cause, or the fix risk was judged too high. See each issue's `.bugbot/` note for the analysis and a recommendation.",
+    );
+    lines.push("");
+  }
   lines.push("## Overview");
   lines.push("");
   lines.push("| Issue | Title | Outcome | Commit |");
   lines.push("| --- | --- | --- | --- |");
   for (const { issue } of items) {
     const o = outcomes.get(issue.shortId);
-    const outcome = o?.kind === "fixed" ? "fixed" : `skipped: ${o?.reason ?? "unknown"}`;
+    const outcome =
+      o?.kind === "fixed"
+        ? "fixed"
+        : o?.kind === "deferred"
+          ? `deferred: ${o.reason}`
+          : `skipped: ${o?.reason ?? "unknown"}`;
     const commitCell =
       o?.kind === "fixed" ? o.commits.map((c) => `\`${c.hash.slice(0, 7)}\``).join(", ") : "—";
     lines.push(
-      `| [\`${issue.shortId}\`](${issue.permalink}) | ${escapeCell(issue.title)} | ${outcome} | ${commitCell} |`,
+      `| [\`${issue.shortId}\`](${issue.permalink}) | ${escapeCell(issue.title)} | ${escapeCell(outcome)} | ${commitCell} |`,
     );
   }
   lines.push("");
@@ -237,7 +291,12 @@ function renderPrBody(
   lines.push("");
   for (const { issue, event } of items) {
     const o = outcomes.get(issue.shortId);
-    const outcome = o?.kind === "fixed" ? "**fixed**" : `**skipped** — ${o?.reason ?? "unknown"}`;
+    const outcome =
+      o?.kind === "fixed"
+        ? "**fixed**"
+        : o?.kind === "deferred"
+          ? `**deferred** — ${o.reason}`
+          : `**skipped** — ${o?.reason ?? "unknown"}`;
     lines.push(`### [\`${issue.shortId}\`](${issue.permalink}) ${issue.title}`);
     lines.push("");
     lines.push(`- Sentry: ${issue.permalink}`);
